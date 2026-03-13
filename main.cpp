@@ -7,7 +7,7 @@
 using namespace std;
 
 const int MAX_KEY_SIZE = 65;
-const int ORDER = 85;  // Tuned for memory constraints
+const int ORDER = 85;
 const int MAX_KEYS = ORDER - 1;
 const int MIN_KEYS = ORDER / 2;
 
@@ -53,7 +53,6 @@ private:
     fstream file;
     int rootPos;
     int nextPos;
-    int firstLeafPos;  // Track first leaf for efficient find
 
     Node readNode(int pos) {
         Node node;
@@ -78,7 +77,6 @@ private:
         file.seekp(0);
         file.write((const char*)&rootPos, sizeof(int));
         file.write((const char*)&nextPos, sizeof(int));
-        file.write((const char*)&firstLeafPos, sizeof(int));
         file.flush();
     }
 
@@ -221,14 +219,26 @@ private:
         }
     }
 
-    // Find first leaf node
-    int findFirstLeaf(int pos) {
+    // Find the leaf node that should contain a given key
+    int findLeafForKey(int pos, const char* key) {
         if (pos < 0) return -1;
+
         Node node = readNode(pos);
+
         if (node.isLeaf) {
             return pos;
         }
-        return findFirstLeaf(node.children[0]);
+
+        // Navigate to appropriate child
+        int childIdx = 0;
+        for (int i = 0; i < node.numKeys; i++) {
+            if (strcmp(key, node.entries[i].key) < 0) {
+                break;
+            }
+            childIdx = i + 1;
+        }
+
+        return findLeafForKey(node.children[childIdx], key);
     }
 
 public:
@@ -245,9 +255,8 @@ public:
         }
 
         if (isNew) {
-            rootPos = 3 * sizeof(int);
+            rootPos = 2 * sizeof(int);
             nextPos = rootPos + sizeof(Node);
-            firstLeafPos = rootPos;
 
             Node root;
             root.isLeaf = true;
@@ -259,7 +268,6 @@ public:
             file.seekg(0);
             file.read((char*)&rootPos, sizeof(int));
             file.read((char*)&nextPos, sizeof(int));
-            file.read((char*)&firstLeafPos, sizeof(int));
         }
     }
 
@@ -283,7 +291,6 @@ public:
             newRoot.children[1] = newChildPos;
 
             rootPos = writeNode(newRoot);
-            firstLeafPos = findFirstLeaf(rootPos);
             updateMeta();
         }
     }
@@ -296,23 +303,36 @@ public:
     void find(const char* key) {
         vector<int> result;
 
-        // Start from first leaf and traverse all leaves
-        int leafPos = findFirstLeaf(rootPos);
+        // Navigate to the first leaf that might contain the key
+        int leafPos = findLeafForKey(rootPos, key);
 
+        // Traverse leaves starting from this position
         while (leafPos >= 0) {
             Node leaf = readNode(leafPos);
 
+            bool foundInThisLeaf = false;
             for (int i = 0; i < leaf.numKeys; i++) {
                 int cmp = strcmp(leaf.entries[i].key, key);
                 if (cmp == 0) {
                     result.push_back(leaf.entries[i].value);
+                    foundInThisLeaf = true;
                 } else if (cmp > 0) {
-                    // Keys are sorted, so we can stop
+                    // Past the key, stop searching
                     goto done;
                 }
             }
 
-            leafPos = leaf.next;
+            // If we haven't found any matches yet and the last key is less than target,
+            // continue to next leaf
+            if (leaf.numKeys > 0 && strcmp(leaf.entries[leaf.numKeys - 1].key, key) < 0) {
+                leafPos = leaf.next;
+            } else if (foundInThisLeaf) {
+                // Continue to next leaf to find more matches
+                leafPos = leaf.next;
+            } else {
+                // No match and key is greater or equal, stop
+                break;
+            }
         }
 
     done:
